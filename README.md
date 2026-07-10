@@ -142,9 +142,7 @@ error!(error = ?err, "Failed to process request");
 ### Instrumentation
 
 ```rust
-use tracing::instrument;
-
-#[instrument]
+#[tracing::instrument]
 async fn process_request(id: u64) {
     tracing::info!(request_id = id, "Processing request");
     // ... do work ...

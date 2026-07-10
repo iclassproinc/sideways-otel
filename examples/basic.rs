@@ -1,6 +1,5 @@
 use sideways_otel::prelude::*;
 use sideways_otel::{init_telemetry, TelemetryConfig};
-use tracing::instrument;
 
 #[tokio::main]
 async fn main() {
@@ -12,7 +11,7 @@ async fn main() {
     telemetry.shutdown();
 }
 
-#[instrument]
+#[tracing::instrument]
 async fn process_order(order_id: &str) {
     tracing::info!("Processing order");
     set_attribute(KeyValue::new("order.id", order_id.to_string()));
