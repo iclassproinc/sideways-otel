@@ -1,6 +1,6 @@
 [package]
 name = "sideways-otel"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 authors = ["iClassPro", "Jeremiah Fulbright"]
 description = "Observability from the side - vendor-neutral OpenTelemetry tracing, metrics, and logs for Rust services"
