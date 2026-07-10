@@ -141,6 +141,8 @@ error!(error = ?err, "Failed to process request");
 
 ### Instrumentation
 
+`#[tracing::instrument]` wraps a function in a span - by default named after the function, with every argument recorded as a field (via `Debug`), and child of whatever span was active when it was called:
+
 ```rust
 #[tracing::instrument]
 async fn process_request(id: u64) {
@@ -148,6 +150,38 @@ async fn process_request(id: u64) {
     // ... do work ...
 }
 ```
+
+#### Adding More Data to the Span
+
+The attribute takes several options for going beyond the defaults - useful when the arguments alone don't tell the whole story, contain things you don't want recorded, or when a value is only known partway through the function:
+
+```rust
+#[tracing::instrument(
+    name = "orders.process",        // override the span name (default: the function name)
+    skip(order),                    // don't try to Debug-format `order` as a field
+    fields(
+        order.id = %order.id,       // %  -> format with Display
+        order.total_cents = order.total_cents,
+        order.status = tracing::field::Empty, // declared now, filled in once known
+    ),
+    err,                             // if this returns Err, record it as a field automatically
+)]
+async fn process_order(order: &Order) -> Result<(), OrderError> {
+    charge_card(&order.id).await?;
+
+    // Record a field that wasn't known when the span was created.
+    tracing::Span::current().record("order.status", "shipped");
+
+    Ok(())
+}
+```
+
+A few things worth knowing:
+- `skip(arg1, arg2, ...)` (or `skip_all`) excludes arguments from the span's fields - required for anything that isn't `Debug`, and good practice for large payloads or secrets you don't want in your telemetry backend.
+- `fields(...)` adds fields beyond the function's arguments. Prefix a value with `%` to format it with `Display`, `?` for `Debug` (the default for argument-derived fields), or leave it bare for values that already implement `tracing::Value` (integers, bools, strings).
+- `tracing::field::Empty` reserves a field slot for a value you don't have yet; call `tracing::Span::current().record("field_name", &value)` later in the function once you do. Fields *not* declared up front (in `fields(...)` or the argument list) can't be recorded this way.
+- `err` (or `err(Debug)` to use `Debug` instead of `Display`) automatically records an `Err` return value as a field and emits an event for it - handy instead of manually calling [`record_error`](#span-attribute-helpers) at every fallible call site.
+- `level = "debug"` (or `trace`/`warn`/`error`) controls the span's level; default is `info`.
 
 ### Span Attribute Helpers
 

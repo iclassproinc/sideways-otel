@@ -8,17 +8,23 @@
 /// macros - instruments are created once and then recorded against directly.
 /// This prelude re-exports the pieces needed to do that, plus a handful of
 /// `counter`/`histogram`/`up_down_counter`/`gauge` shortcuts for the common
-/// case where you don't need per-instrument descriptions or units.
+/// synchronous case, and `observable_counter`/`observable_up_down_counter`/
+/// `observable_gauge` for the async/callback-based case (a value that's
+/// cheaper or more natural to sample at collection time - queue depth, open
+/// file descriptors - than to push on every change). There's no
+/// `observable_histogram`: the `OTel` spec doesn't define one, since a
+/// histogram's whole point is recording a distribution of individual
+/// measurements as they happen.
 ///
 /// TODO: these shortcuts only cover the default numeric type per instrument
 /// kind (`u64` counter, `f64` histogram/gauge, `i64` up/down counter) and
-/// skip the observable (async/callback-based) instruments entirely
-/// (`u64_observable_counter`, `*_observable_gauge`,
-/// `*_observable_up_down_counter`) and the alternate numeric types
-/// (`f64_counter`, `u64_histogram`, `i64_gauge`, `f64_up_down_counter`).
-/// Add wrappers for these as real use cases show up, rather than
-/// pre-building the full matrix speculatively.
-pub use opentelemetry::metrics::{Counter, Gauge, Histogram, Meter, UpDownCounter};
+/// skip the alternate numeric types (`f64_counter`, `u64_histogram`,
+/// `i64_gauge`, `f64_up_down_counter`). Add wrappers for these as real use
+/// cases show up, rather than pre-building the full matrix speculatively.
+pub use opentelemetry::metrics::{
+    AsyncInstrument, Counter, Gauge, Histogram, Meter, ObservableCounter, ObservableGauge,
+    ObservableUpDownCounter, UpDownCounter,
+};
 pub use opentelemetry::{global, KeyValue};
 pub use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -93,4 +99,77 @@ pub fn up_down_counter(name: impl Into<Cow<'static, str>>) -> UpDownCounter<i64>
 #[must_use]
 pub fn gauge(name: impl Into<Cow<'static, str>>) -> Gauge<f64> {
     meter().f64_gauge(name).build()
+}
+
+/// Create a `u64` observable (async) counter: `callback` is invoked by the
+/// SDK once per collection cycle rather than being called directly, and
+/// should call `observer.observe(value, attributes)` for each value it wants
+/// to report (more than once, with different attributes, if applicable).
+///
+/// ```rust,no_run
+/// use sideways_otel::prelude::*;
+///
+/// let _requests_total = observable_counter("requests.total", |observer| {
+///     observer.observe(current_request_count(), &[]);
+/// });
+/// # fn current_request_count() -> u64 { 0 }
+/// ```
+#[must_use]
+pub fn observable_counter(
+    name: impl Into<Cow<'static, str>>,
+    callback: impl Fn(&dyn AsyncInstrument<u64>) + Send + Sync + 'static,
+) -> ObservableCounter<u64> {
+    meter()
+        .u64_observable_counter(name)
+        .with_callback(callback)
+        .build()
+}
+
+/// Create an `i64` observable (async) up/down counter: `callback` is invoked
+/// by the SDK once per collection cycle and should call
+/// `observer.observe(value, attributes)` for each value it wants to report.
+///
+/// ```rust,no_run
+/// use sideways_otel::prelude::*;
+///
+/// let _queue_depth = observable_up_down_counter("queue.depth", |observer| {
+///     observer.observe(current_queue_depth(), &[KeyValue::new("queue", "emails")]);
+/// });
+/// # fn current_queue_depth() -> i64 { 0 }
+/// ```
+#[must_use]
+pub fn observable_up_down_counter(
+    name: impl Into<Cow<'static, str>>,
+    callback: impl Fn(&dyn AsyncInstrument<i64>) + Send + Sync + 'static,
+) -> ObservableUpDownCounter<i64> {
+    meter()
+        .i64_observable_up_down_counter(name)
+        .with_callback(callback)
+        .build()
+}
+
+/// Create an `f64` observable (async) gauge: `callback` is invoked by the
+/// SDK once per collection cycle and should call
+/// `observer.observe(value, attributes)` for each value it wants to report.
+/// Prefer this over [`gauge`] whenever the current value is cheaper or more
+/// natural to sample on demand (e.g. reading OS/process stats) than to push
+/// on every change.
+///
+/// ```rust,no_run
+/// use sideways_otel::prelude::*;
+///
+/// let _cpu_usage = observable_gauge("cpu.usage_percent", |observer| {
+///     observer.observe(current_cpu_usage(), &[KeyValue::new("host", "web-01")]);
+/// });
+/// # fn current_cpu_usage() -> f64 { 0.0 }
+/// ```
+#[must_use]
+pub fn observable_gauge(
+    name: impl Into<Cow<'static, str>>,
+    callback: impl Fn(&dyn AsyncInstrument<f64>) + Send + Sync + 'static,
+) -> ObservableGauge<f64> {
+    meter()
+        .f64_observable_gauge(name)
+        .with_callback(callback)
+        .build()
 }

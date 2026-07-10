@@ -77,8 +77,8 @@ cargo publish            # Actually publish
 
 5. **`src/span.rs`** - Generic helpers (`set_attribute`, `set_attributes`, `add_event`, `record_error`) for enriching the *current* `tracing` span with OTel attributes/events without reaching for `tracing_opentelemetry` directly.
 
-6. **`src/prelude.rs`** - Convenience module re-exporting `opentelemetry::{global, KeyValue}`, metric instrument types, `OpenTelemetrySpanExt`, and the `span` helpers, plus a `meter()` shortcut (auto-scoped to the configured service name) and `counter()`/`histogram()`/`up_down_counter()`/`gauge()` shortcuts for the default numeric type per instrument kind.
-   - **TODO**: the instrument shortcuts don't yet cover the observable (callback-based) instruments or alternate numeric types (`f64_counter`, `u64_histogram`, `i64_gauge`, `f64_up_down_counter`) - add them as real use cases come up rather than pre-building the full matrix. See the TODO comment in `src/prelude.rs`.
+6. **`src/prelude.rs`** - Convenience module re-exporting `opentelemetry::{global, KeyValue}`, metric instrument types, `OpenTelemetrySpanExt`, and the `span` helpers, plus a `meter()` shortcut (auto-scoped to the configured service name), `counter()`/`histogram()`/`up_down_counter()`/`gauge()` shortcuts for the default numeric type per synchronous instrument kind, and `observable_counter()`/`observable_up_down_counter()`/`observable_gauge()` for the async/callback-based equivalents (no `observable_histogram` - the OTel spec doesn't define one).
+   - **TODO**: the instrument shortcuts still don't cover the alternate numeric types (`f64_counter`, `u64_histogram`, `i64_gauge`, `f64_up_down_counter`) - add them as real use cases come up rather than pre-building the full matrix. See the TODO comment in `src/prelude.rs`.
 
 ### Key Design Patterns
 
