@@ -80,6 +80,9 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 6. **`src/prelude.rs`** - Convenience module re-exporting `opentelemetry::{global, KeyValue}`, metric instrument types, `OpenTelemetrySpanExt`, and the `span` helpers, plus a `meter()` shortcut (auto-scoped to the configured service name), `counter()`/`histogram()`/`up_down_counter()`/`gauge()` shortcuts for the default numeric type per synchronous instrument kind, and `observable_counter()`/`observable_up_down_counter()`/`observable_gauge()` for the async/callback-based equivalents (no `observable_histogram` - the OTel spec doesn't define one).
    - **TODO**: the instrument shortcuts still don't cover the alternate numeric types (`f64_counter`, `u64_histogram`, `i64_gauge`, `f64_up_down_counter`) - add them as real use cases come up rather than pre-building the full matrix. See the TODO comment in `src/prelude.rs`.
 
+7. **`src/propagation.rs`** - Installs the global `TextMapPropagator` (`opentelemetry::global::set_text_map_propagator`) from `TelemetryConfig::propagators`, called unconditionally at the top of `init_telemetry` (independent of `traces_enabled` - propagation matters for cross-service correlation even if this process isn't exporting spans itself).
+   - `PropagatorKind` (in `lib.rs`) only has `TraceContext`/`Baggage` variants - that's the complete set `opentelemetry_sdk::propagation` ships. B3/Jaeger/X-Ray each need a separate crate (`opentelemetry-zipkin`/`opentelemetry-jaeger-propagator`/`opentelemetry-aws`) not currently a dependency; add support (new variant + dependency) if a real backend needs one, same policy as the metrics instrument TODO above.
+
 ### Key Design Patterns
 
 **Vendor-Neutral by Construction**: There is no Honeycomb/Datadog/etc.-specific code anywhere in this crate. Authentication and routing for a specific backend is entirely a matter of setting `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` (or the equivalent builder methods) - the library has no knowledge of what backend is on the other end. Do not add vendor-specific config/helpers here; that belongs in the consuming application.
@@ -89,6 +92,8 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 **Graceful Degradation**: If the OTLP endpoint is unavailable, the library logs to stderr and falls back to console-only logging rather than crashing the application (see `lib.rs::init_telemetry` and `tracing.rs::init_console_logging`).
 
 **No Metrics Macros**: Unlike `sideways` (which needs `cadence-macros` because StatsD has no native Rust ergonomics), OpenTelemetry's metrics API is already ergonomic - instruments are created once from a `Meter` and recorded against directly. `prelude::meter()` is the only convenience wrapper; do not add macro-based metric helpers.
+
+**Propagation Is Independent of Export**: `propagation::init_propagator` runs unconditionally at the top of `init_telemetry`, even when `traces_enabled` is `false`. Context propagation (attaching/reading `traceparent`/`baggage` across a process boundary) is about *this service correctly participating in someone else's trace*, which matters regardless of whether this service is itself exporting spans - don't gate it behind `traces_enabled`.
 
 **Instruments Are Created Once, Not Per-Call**: `counter()`/`histogram()`/etc. build a new instrument on every call - calling one inside a hot-path function (e.g. a request handler) recreates the instrument on every request, which is wasted work. When writing example code, docs, or code that calls these helpers from somewhere that runs repeatedly, use a `OnceLock` (or build the instrument once at startup) and reuse the handle - see the pattern in README.md's Metrics section. `Counter`/`Histogram`/`UpDownCounter`/`Gauge` are all cheap-to-`.clone()`, `Send + Sync`, `Arc`-backed handles, so a plain `static OnceLock<Counter<u64>>` works without needing any framework-specific state.
 
@@ -144,3 +149,4 @@ All OTLP auth (API keys, tenant IDs, etc.) goes through `OTEL_EXPORTER_OTLP_HEAD
 - `OTEL_METRIC_EXPORT_INTERVAL` - Metrics export interval in milliseconds (default: 60000)
 - `RUST_LOG` - Log level filter (default: info). Full `tracing_subscriber::EnvFilter` directive syntax is supported natively (no extra parsing needed), including per-target overrides and `off`, e.g. `warn,h2=off,hyper=off,tonic=off,opentelemetry=off,opentelemetry_sdk=off`
 - `JSON_LOGGING` - Enable JSON-formatted console logging (default: false)
+- `OTEL_PROPAGATORS` - Comma-separated context propagation formats: `tracecontext`, `baggage`, `none` (default: `tracecontext,baggage`, matching the spec default)

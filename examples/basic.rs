@@ -49,4 +49,21 @@ async fn process_order(order_id: &str) {
 
     let queue_depth = up_down_counter("orders.queue_depth");
     queue_depth.add(-1, &[]);
+
+    // Propagate the current trace context across a process boundary (e.g.
+    // an outgoing HTTP request) - inject it into a carrier here, and the
+    // receiving service extracts it the same way to continue the same trace.
+    let mut carrier = std::collections::HashMap::new();
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&tracing::Span::current().context(), &mut HashMapCarrier(&mut carrier));
+    });
+    tracing::info!(?carrier, "Headers to send with the outgoing request");
+}
+
+struct HashMapCarrier<'a>(&'a mut std::collections::HashMap<String, String>);
+
+impl opentelemetry::propagation::Injector for HashMapCarrier<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_string(), value);
+    }
 }

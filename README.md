@@ -26,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sideways-otel = "0.2"
+sideways-otel = "0.3"
 ```
 
 Initialize in your application:
@@ -303,6 +303,52 @@ The library automatically filters out health check-related spans to reduce noise
 - Spans from `tonic_health`
 - Spans containing "health", "Health", or "Check"
 - gRPC health check services
+
+## Context Propagation
+
+`init_telemetry` installs a global context propagator by default - **W3C Trace Context** (`traceparent`/`tracestate`) plus **W3C Baggage** (`baggage`), matching the `OTEL_PROPAGATORS` spec default. This is what lets a trace stay connected across a process boundary (an outgoing HTTP call, a message queue, etc.) instead of starting a brand new, disconnected trace in the next service.
+
+Only these two formats are supported - B3, Jaeger, and X-Ray propagation each require a separate crate (`opentelemetry-zipkin`, `opentelemetry-jaeger-propagator`, `opentelemetry-aws` respectively) that this crate doesn't depend on. Override via `OTEL_PROPAGATORS` (comma-separated: `tracecontext`, `baggage`, or `none` to disable) or `TelemetryConfig::builder().propagators(vec![...])`.
+
+Propagation is independent of trace *export* - it's installed even if `OTEL_TRACES_ENABLED=false`, since correlating requests across services is useful regardless of whether this particular process is exporting spans.
+
+To actually use it, you inject the current span's context into whatever "carrier" your transport uses (HTTP headers, gRPC metadata, a message's key-value attributes) on the way out, and extract it back into a `Context` on the way in. `opentelemetry::propagation::{Injector, Extractor}` are simple two/three-method traits - implement them for your transport's header type, or use an existing implementation like `opentelemetry-http`'s `HeaderInjector`/`HeaderExtractor` if you're already depending on the `http` crate:
+
+```rust
+use sideways_otel::prelude::*;
+use opentelemetry::propagation::Injector;
+use std::collections::HashMap;
+
+struct HashMapCarrier<'a>(&'a mut HashMap<String, String>);
+
+impl Injector for HashMapCarrier<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_string(), value);
+    }
+}
+
+#[tracing::instrument]
+async fn call_downstream_service() {
+    let mut headers = HashMap::new();
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&tracing::Span::current().context(), &mut HashMapCarrier(&mut headers));
+    });
+    // ... send `headers` along with the outgoing request ...
+}
+```
+
+Extracting on the receiving end is the mirror image - implement `Extractor` (`get`/`keys`) over the incoming request's headers, then:
+
+```rust,ignore
+let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
+    propagator.extract(&incoming_headers_carrier)
+});
+if let Err(err) = tracing::Span::current().set_parent(parent_cx) {
+    tracing::warn!(?err, "failed to attach incoming trace context");
+}
+```
+
+`set_parent` (from `OpenTelemetrySpanExt`, re-exported in the prelude) makes the current span a child of whatever trace the incoming request was already part of, so the whole call chain shows up as one connected trace instead of two separate ones.
 
 ## Local Testing
 

@@ -14,6 +14,8 @@
 //! - Environment-based configuration using standard `OTEL_*` variables
 //! - Health check filtering to reduce noise
 //! - Native OpenTelemetry metrics API - no vendor-specific macros required
+//! - W3C Trace Context + Baggage propagation installed by default, matching
+//!   the `OTEL_PROPAGATORS` spec default
 //!
 //! ## Quick Start
 //!
@@ -36,6 +38,7 @@
 
 pub mod metrics;
 pub mod prelude;
+pub mod propagation;
 pub mod resource;
 pub mod span;
 pub mod tracing;
@@ -66,6 +69,24 @@ pub enum OtlpProtocol {
     /// where gRPC/HTTP2 is blocked (some proxies/gateways) or where a vendor
     /// only exposes an HTTP ingestion endpoint.
     HttpProtobuf,
+}
+
+/// A `W3C`-standard context propagation format. Corresponds to the values
+/// accepted by the standard `OTEL_PROPAGATORS` environment variable, though
+/// only `tracecontext` and `baggage` are currently supported here - the spec
+/// also defines `b3`, `b3multi`, `jaeger`, `xray`, and `ottrace`, each of
+/// which needs its own crate (`opentelemetry-zipkin`, etc.). Add support for
+/// those as real use cases show up rather than pre-building the full matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropagatorKind {
+    /// W3C Trace Context (the `traceparent`/`tracestate` headers) - carries
+    /// trace/span IDs across process boundaries. Part of the `OTEL_PROPAGATORS`
+    /// spec default and enabled here by default for the same reason.
+    TraceContext,
+    /// W3C Baggage (the `baggage` header) - carries arbitrary user-defined
+    /// key-value context across process boundaries, independent of any
+    /// specific trace. Also part of the spec default.
+    Baggage,
 }
 
 #[derive(Debug, Error)]
@@ -115,6 +136,11 @@ pub struct TelemetryConfig {
 
     /// Metrics export interval, in milliseconds (default: 60000).
     pub metrics_export_interval_ms: u64,
+
+    /// Which context propagation format(s) to install globally (default:
+    /// `[TraceContext, Baggage]`, matching the `OTEL_PROPAGATORS` spec
+    /// default). An empty list disables propagation entirely.
+    pub propagators: Vec<PropagatorKind>,
 }
 
 impl Default for TelemetryConfig {
@@ -131,6 +157,7 @@ impl Default for TelemetryConfig {
             rust_log: "info".to_string(),
             json_logging: false,
             metrics_export_interval_ms: 60_000,
+            propagators: vec![PropagatorKind::TraceContext, PropagatorKind::Baggage],
         }
     }
 }
@@ -192,6 +219,23 @@ impl TelemetryConfig {
             && let Ok(ms) = interval.parse()
         {
             config.metrics_export_interval_ms = ms;
+        }
+
+        if let Ok(propagators) = env::var("OTEL_PROPAGATORS") {
+            config.propagators = propagators
+                .split(',')
+                .filter_map(|name| match name.trim() {
+                    "tracecontext" => Some(PropagatorKind::TraceContext),
+                    "baggage" => Some(PropagatorKind::Baggage),
+                    "none" => None,
+                    other => {
+                        eprintln!(
+                            "⚠️  Unsupported OTEL_PROPAGATORS entry '{other}' (expected 'tracecontext', 'baggage', or 'none'), skipping"
+                        );
+                        None
+                    }
+                })
+                .collect();
         }
 
         config
@@ -312,6 +356,14 @@ impl TelemetryConfigBuilder {
         self
     }
 
+    /// Set which context propagation format(s) to install globally. Pass an
+    /// empty `Vec` to disable propagation entirely.
+    #[must_use]
+    pub fn propagators(mut self, propagators: Vec<PropagatorKind>) -> Self {
+        self.config.propagators = propagators;
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> TelemetryConfig {
         self.config
@@ -360,9 +412,12 @@ fn describe_endpoint(config: &TelemetryConfig) -> &str {
 /// Initialize telemetry with the given configuration.
 ///
 /// This will:
-/// 1. Initialize OTLP trace export (if enabled)
-/// 2. Initialize OTLP metrics export (if enabled)
-/// 3. Initialize OTLP log export (if enabled) and console logging
+/// 1. Install the configured context propagator(s) globally (independent of
+///    whether trace export is enabled - propagation still matters for
+///    correlating incoming/outgoing requests)
+/// 2. Initialize OTLP trace export (if enabled)
+/// 3. Initialize OTLP metrics export (if enabled)
+/// 4. Initialize OTLP log export (if enabled) and console logging
 ///
 /// Returns a `Telemetry` struct that must be kept alive for the duration of
 /// the application and shut down on exit via [`Telemetry::shutdown`].
@@ -371,6 +426,8 @@ pub fn init_telemetry(config: &TelemetryConfig) -> Telemetry {
     eprintln!("🦀 Sideways OTel: Initializing...");
 
     let _ = SERVICE_NAME.set(config.service_name.clone());
+
+    propagation::init_propagator(config);
 
     let resource = resource::build_resource(config);
 
