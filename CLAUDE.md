@@ -45,13 +45,13 @@ A clean exit with no `BatchSpanProcessor.ExportError` / `BatchLogProcessor.Expor
 `examples/vendor_backend.rs` exercises the HTTPS/TLS + auth-header path against a real hosted OTLP endpoint. It takes the endpoint, header name, and header value entirely from environment variables (`OTLP_ENDPOINT`/`OTLP_HEADER_NAME`/`OTLP_HEADER_VALUE`) rather than hardcoding any vendor, so it can be pointed at whichever backend you're validating against - use it when validating changes to `tls_config()`/`build_otlp_exporter!`/header handling. A gRPC `Unauthenticated` error (not `UnknownIssuer`/connection errors) means TLS and transport are working correctly and only the credential itself is invalid/missing, which is expected without a real API key.
 
 ### Publishing
-Before publishing to crates.io:
+Publishing is automated via `.github/workflows/publish.yml`: pushing a `vX.Y.Z` tag (that's reachable from `main` and matches `Cargo.toml`'s version) runs the test/clippy gate, then `cargo publish` and creates a GitHub release. Before tagging:
 ```bash
 cargo test --all-features
 cargo clippy --all-targets --all-features
 cargo publish --dry-run  # Test the publishing process
-cargo publish            # Actually publish
 ```
+Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` under `[dependencies]`) to match - it's a plain string, not something crates.io or the CI badges keep in sync automatically.
 
 ## Architecture
 

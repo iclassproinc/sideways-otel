@@ -1,5 +1,9 @@
 # Sideways OTel 🦀
 
+[![CI](https://github.com/iclassproinc/sideways-otel/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/iclassproinc/sideways-otel/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/sideways-otel.svg)](https://crates.io/crates/sideways-otel)
+[![docs.rs](https://img.shields.io/docsrs/sideways-otel)](https://docs.rs/sideways-otel)
+
 > *Observability from the side - because crabs walk sideways, and so should your telemetry.*
 
 A production-ready Rust telemetry library that provides vendor-neutral **OpenTelemetry** tracing, metrics, and logs, exported via OTLP to any compatible backend - a local Collector, the [.NET Aspire dashboard](https://learn.microsoft.com/dotnet/aspire/fundamentals/dashboard/overview), or any hosted vendor that speaks OTLP.
@@ -12,7 +16,7 @@ A production-ready Rust telemetry library that provides vendor-neutral **OpenTel
 - 🚀 **One-Line Initialization** - Simple `init_telemetry()` call sets up everything
 - 🔧 **Standard `OTEL_*` Env Vars** - Configure via the environment variables already defined by the OpenTelemetry spec
 - 💪 **Graceful Degradation** - Continues running even if the OTLP endpoint is unavailable
-- 📈 **Native OpenTelemetry Metrics** - No vendor-specific macros; instruments come straight from the OTel metrics API
+- 📈 **Native OpenTelemetry Metrics** - No vendor-specific macros; sync and observable (async/callback) instruments come straight from the OTel metrics API
 - 🧵 **Span Helpers** - Small, generic helpers for attaching attributes and events to the current span
 - 🔍 **Health Check Filtering** - Automatically filters out noisy health check spans
 
@@ -22,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sideways-otel = "0.1"
+sideways-otel = "0.2"
 ```
 
 Initialize in your application:
@@ -124,6 +128,34 @@ queue_depth.add(1, &[KeyValue::new("queue", "emails")]);
 These default to `u64` counters, `f64` histograms/gauges, and `i64` up/down counters - the common case. For a different numeric type, per-instrument description/unit, or a meter scoped to something other than the service name, drop down to `meter()` (or `opentelemetry::global::meter("some-scope")`) and its `u64_counter()`/`f64_histogram()`/etc. builders directly.
 
 Create each instrument once (e.g. in a `OnceLock` or at startup) and reuse it - `meter()` is cheap to call repeatedly, but recreating the instrument itself on every call is wasted work.
+
+### Observable (Async) Metrics
+
+For a value that's cheaper or more natural to *sample on demand* than to push on every change - a queue depth, open file descriptors, current pool size - use the observable variants instead. Rather than calling `.add()`/`.record()` yourself, you register a callback once and the SDK invokes it on every collection cycle:
+
+```rust
+use sideways_otel::prelude::*;
+
+// The returned handle can be dropped immediately - the callback keeps
+// firing for the life of the MeterProvider regardless, since registration
+// happens against the SDK's meter pipeline, not the handle itself.
+let _open_connections = observable_gauge("db.pool.open_connections", |observer| {
+    observer.observe(current_pool_size() as f64, &[KeyValue::new("pool", "primary")]);
+});
+
+let _queue_depth = observable_up_down_counter("queue.depth", |observer| {
+    observer.observe(current_queue_depth(), &[KeyValue::new("queue", "emails")]);
+});
+
+let _requests_total = observable_counter("requests.total", |observer| {
+    observer.observe(current_request_count(), &[]);
+});
+# fn current_pool_size() -> i64 { 0 }
+# fn current_queue_depth() -> i64 { 0 }
+# fn current_request_count() -> u64 { 0 }
+```
+
+A callback can call `observer.observe(...)` more than once with different attributes, to report several related values (e.g. per-queue depths) from a single registration. There's no `observable_histogram` - the OTel spec doesn't define one, since a histogram's whole point is recording a distribution of individual measurements as they happen, not a single sampled value.
 
 ## Tracing
 
