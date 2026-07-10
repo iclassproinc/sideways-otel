@@ -41,6 +41,11 @@ async fn process_order(order_id: &str) {
     .instrument(tracing::info_span!("order.charge_card"))
     .await;
 
+    // skip_all + fields(...): DbPool doesn't implement Debug (a realistic
+    // reason to need this), so it must be skipped one way or another. Only
+    // order.id ends up as a field - db is never touched.
+    save_order(order_id, &DbPool).await;
+
     let requests = counter("orders.processed");
     requests.add(1, &[KeyValue::new("status", "success")]);
 
@@ -66,4 +71,12 @@ impl opentelemetry::propagation::Injector for HashMapCarrier<'_> {
     fn set(&mut self, key: &str, value: String) {
         self.0.insert(key.to_string(), value);
     }
+}
+
+/// Doesn't implement `Debug` - a realistic connection pool wouldn't either.
+struct DbPool;
+
+#[tracing::instrument(skip_all, fields(order.id = %order_id))]
+async fn save_order(order_id: &str, _db: &DbPool) {
+    tracing::info!("Saving order to database");
 }
