@@ -23,6 +23,24 @@ async fn process_order(order_id: &str) {
     tracing::info!("Processing order");
     set_attribute(KeyValue::new("order.id", order_id.to_string()));
 
+    // Start/end (guard) style child span - fine for synchronous work, but
+    // must not be held across an .await point (see the next example for that).
+    {
+        let _guard = tracing::info_span!("order.validate").entered();
+        tracing::info!("Validating order");
+    } // span ends here, when the guard drops
+
+    // Closure/future style child span, required once the work spans .await
+    // points - holding an `Entered` guard across an await is a known
+    // correctness footgun (the span can leak onto whatever else runs on that
+    // thread while this task is suspended).
+    use tracing::Instrument;
+    async {
+        tracing::info!("Charging card");
+    }
+    .instrument(tracing::info_span!("order.charge_card"))
+    .await;
+
     let requests = counter("orders.processed");
     requests.add(1, &[KeyValue::new("status", "success")]);
 

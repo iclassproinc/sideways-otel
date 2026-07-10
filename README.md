@@ -245,6 +245,39 @@ A few things worth knowing:
 - `err` (or `err(Debug)` to use `Debug` instead of `Display`) automatically records an `Err` return value as a field and emits an event for it - handy instead of manually calling [`record_error`](#span-attribute-helpers) at every fallible call site.
 - `level = "debug"` (or `trace`/`warn`/`error`) controls the span's level; default is `info`.
 
+### Manual Child Spans
+
+`#[tracing::instrument]` covers the common case (one span per function), but you can also create a child span by hand inside an already-instrumented function - useful for naming a sub-step distinctly, or for spans that don't map onto a whole function. There are two styles, and which one you need depends on whether the work spans an `.await` point:
+
+```rust
+use tracing::Instrument;
+
+#[tracing::instrument]
+async fn process_order(order_id: &str) {
+    // Start/end (guard) style: fine for synchronous work. The span ends
+    // when `_guard` drops at the end of the block. Do NOT hold this guard
+    // across an `.await` - see below for why.
+    {
+        let _guard = tracing::info_span!("order.validate").entered();
+        tracing::info!("Validating order");
+    }
+
+    // Closure/future style: required once the work spans .await points.
+    // `.instrument(span)` re-enters the span every time the future is
+    // polled, which correctly handles the future being suspended and later
+    // resumed on a different thread - something a plain guard can't do.
+    async {
+        tracing::info!("Charging card");
+    }
+    .instrument(tracing::info_span!("order.charge_card"))
+    .await;
+}
+```
+
+Both spans show up as children of `process_order` in whatever exports the trace - confirmed by the console span stack (`tracing-subscriber`'s `fmt` layer prints the active span stack colon-separated): `process_order{order_id="order-42"}:order.validate: ...` and `process_order{order_id="order-42"}:order.charge_card: ...`. `tracing-opentelemetry` builds its OTel parent/child span links from that exact same span-stack data, so the nesting carries through to your OTLP backend identically.
+
+**Why the guard/`.await` distinction matters**: an `Entered` guard is tied to the current thread's span stack. If you hold one across an `.await`, the async runtime can suspend your future and run something else entirely on that thread while the span is still "active" - so unrelated work ends up nested under your span, or the span's duration includes time it wasn't actually doing anything. `.instrument()` avoids this by re-entering the span only while the future is actually being polled.
+
 ### Span Attribute Helpers
 
 `sideways_otel::span` (re-exported from the prelude) provides generic helpers for enriching the *current* span with OpenTelemetry attributes and events, without reaching for `tracing_opentelemetry` directly:
