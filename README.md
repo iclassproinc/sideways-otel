@@ -245,6 +245,27 @@ A few things worth knowing:
 - `err` (or `err(Debug)` to use `Debug` instead of `Display`) automatically records an `Err` return value as a field and emits an event for it - handy instead of manually calling [`record_error`](#span-attribute-helpers) at every fallible call site.
 - `level = "debug"` (or `trace`/`warn`/`error`) controls the span's level; default is `info`.
 
+#### Skipping or Limiting Which Arguments Become Fields
+
+By default every argument is recorded as a field. Two ways to cut that down, depending on whether you want to exclude a few arguments or only include a few:
+
+```rust
+// Exclude specific arguments - the rest are still recorded as usual.
+#[tracing::instrument(skip(password))]
+async fn login(username: &str, password: &str) {
+    // span fields: username. password is never touched.
+}
+
+// Exclude everything, then explicitly opt back in only what you want -
+// useful when most arguments are large, sensitive, or just not `Debug`.
+#[tracing::instrument(skip_all, fields(order.id = %order.id))]
+async fn process_order(order: &Order, db: &DbPool) {
+    // span fields: only order.id. Neither `order` (as Debug) nor `db` show up.
+}
+```
+
+There's no separate "include-list" attribute - `skip_all` plus `fields(...)` *is* the include-list pattern. Anything not `Debug` (most connection pools, clients, etc.) must be skipped one way or the other, or the code won't compile.
+
 ### Manual Child Spans
 
 `#[tracing::instrument]` covers the common case (one span per function), but you can also create a child span by hand inside an already-instrumented function - useful for naming a sub-step distinctly, or for spans that don't map onto a whole function. There are two styles, and which one you need depends on whether the work spans an `.await` point:
