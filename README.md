@@ -375,6 +375,10 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:18889 OTEL_SERVICE_NAME=my-service 
 
 Open `http://localhost:18888` (using the browser auth token printed to the container's console) to see traces, structured logs, and metrics.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the clippy/testing conventions this repo expects PRs to follow.
+
 ## Publishing
 
 This crate is published to [crates.io](https://crates.io/crates/sideways-otel).
