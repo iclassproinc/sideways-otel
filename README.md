@@ -4,6 +4,8 @@
 
 A production-ready Rust telemetry library that provides vendor-neutral **OpenTelemetry** tracing, metrics, and logs, exported via OTLP to any compatible backend - a local Collector, the [.NET Aspire dashboard](https://learn.microsoft.com/dotnet/aspire/fundamentals/dashboard/overview), or any hosted vendor that speaks OTLP.
 
+> **Note:** This crate was built with substantial AI assistance (Claude Code) - design, implementation, and documentation were all done in collaboration with an AI agent, with human review and testing against real OTLP backends throughout. We're noting this in the interest of transparency.
+
 ## Features
 
 - 🔭 **Vendor-Neutral OTLP Export** - Traces, metrics, and logs exported over gRPC to any OTLP-compatible backend
