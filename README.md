@@ -127,7 +127,37 @@ queue_depth.add(1, &[KeyValue::new("queue", "emails")]);
 
 These default to `u64` counters, `f64` histograms/gauges, and `i64` up/down counters - the common case. For a different numeric type, per-instrument description/unit, or a meter scoped to something other than the service name, drop down to `meter()` (or `opentelemetry::global::meter("some-scope")`) and its `u64_counter()`/`f64_histogram()`/etc. builders directly.
 
-Create each instrument once (e.g. in a `OnceLock` or at startup) and reuse it - `meter()` is cheap to call repeatedly, but recreating the instrument itself on every call is wasted work.
+Create each instrument once (e.g. in a `OnceLock` or at startup) and reuse it - `meter()` is cheap to call repeatedly, but recreating the instrument itself on every call is wasted work. Concretely, avoid this:
+
+```rust
+use sideways_otel::prelude::*;
+
+// BAD: calls counter("requests.handled") - and therefore builds a brand new
+// Counter instrument - on every single request.
+async fn handle_request() {
+    let requests = counter("requests.handled");
+    requests.add(1, &[KeyValue::new("status", "success")]);
+}
+```
+
+and instead build the instrument once, then just record against the same handle every time - a `Counter`/`Histogram`/etc. is cheap to `.clone()` and safe to share across threads (`Send + Sync`), so a `OnceLock` behind a plain function works well without any framework-specific state:
+
+```rust
+use sideways_otel::prelude::*;
+use std::sync::OnceLock;
+
+fn requests_counter() -> &'static Counter<u64> {
+    static REQUESTS: OnceLock<Counter<u64>> = OnceLock::new();
+    REQUESTS.get_or_init(|| counter("requests.handled"))
+}
+
+async fn handle_request() {
+    // Cheap on every call: no instrument creation, just a OnceLock read.
+    requests_counter().add(1, &[KeyValue::new("status", "success")]);
+}
+```
+
+The same pattern applies to `histogram`/`up_down_counter`/`gauge`/their observable equivalents, and to instruments built directly from `meter()`.
 
 ### Observable (Async) Metrics
 
