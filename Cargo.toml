@@ -1,0 +1,58 @@
+[package]
+name = "sideways-otel"
+version = "0.1.0"
+edition = "2024"
+authors = ["iClassPro", "Jeremiah Fulbright"]
+description = "Observability from the side - vendor-neutral OpenTelemetry tracing, metrics, and logs for Rust services"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/iclassproinc/sideways-otel"
+homepage = "https://github.com/iclassproinc/sideways-otel"
+documentation = "https://docs.rs/sideways-otel"
+readme = "README.md"
+keywords = ["observability", "telemetry", "opentelemetry", "otlp", "metrics"]
+categories = ["development-tools::profiling", "development-tools::debugging"]
+rust-version = "1.85"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Building configs/errors from many env vars reads more clearly as flat code
+# than as deeply nested helper functions.
+too_many_lines = "allow"
+module_name_repetitions = "allow"
+# TelemetryConfig's bools are independent on/off toggles (traces/metrics/logs
+# enabled, json logging), not a state machine - enums would add ceremony
+# without adding clarity here.
+struct_excessive_bools = "allow"
+# Panicking on a config/IO error is a bug in a library meant to degrade
+# gracefully - force every fallible path to return a Result instead.
+unwrap_used = "warn"
+expect_used = "warn"
+
+[dependencies]
+# Tracing foundation
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "time"] }
+tracing-opentelemetry = "0.33.0"
+
+# OpenTelemetry core + OTLP export (traces, metrics, logs)
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
+# tls-ring + tls-webpki-roots are required for HTTPS OTLP endpoints (every
+# hosted vendor): tls-ring enables the TLS crypto backend, tls-webpki-roots
+# bundles Mozilla's root certificate store so the exporter can validate the
+# backend's certificate without depending on the host OS's cert store.
+opentelemetry-otlp = { version = "0.32.0", features = ["grpc-tonic", "trace", "metrics", "logs", "tls-ring", "tls-webpki-roots"] }
+opentelemetry-appender-tracing = "0.32.0"
+opentelemetry-semantic-conventions = "0.32.0"
+tonic = { version = "0.14", default-features = false }
+
+# Error handling
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[lib]
+name = "sideways_otel"
+path = "src/lib.rs"
