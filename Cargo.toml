@@ -11,7 +11,7 @@ documentation = "https://docs.rs/sideways-otel"
 readme = "README.md"
 keywords = ["observability", "telemetry", "opentelemetry", "otlp", "metrics"]
 categories = ["development-tools::profiling", "development-tools::debugging"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }

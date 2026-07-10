@@ -148,20 +148,20 @@ impl TelemetryConfig {
             config.resource_attributes = Self::parse_pairs(&attrs, '=');
         }
 
-        if let Ok(enabled) = env::var("OTEL_TRACES_ENABLED") {
-            if enabled.eq_ignore_ascii_case("false") {
-                config.traces_enabled = false;
-            }
+        if let Ok(enabled) = env::var("OTEL_TRACES_ENABLED")
+            && enabled.eq_ignore_ascii_case("false")
+        {
+            config.traces_enabled = false;
         }
-        if let Ok(enabled) = env::var("OTEL_METRICS_ENABLED") {
-            if enabled.eq_ignore_ascii_case("false") {
-                config.metrics_enabled = false;
-            }
+        if let Ok(enabled) = env::var("OTEL_METRICS_ENABLED")
+            && enabled.eq_ignore_ascii_case("false")
+        {
+            config.metrics_enabled = false;
         }
-        if let Ok(enabled) = env::var("OTEL_LOGS_ENABLED") {
-            if enabled.eq_ignore_ascii_case("false") {
-                config.logs_enabled = false;
-            }
+        if let Ok(enabled) = env::var("OTEL_LOGS_ENABLED")
+            && enabled.eq_ignore_ascii_case("false")
+        {
+            config.logs_enabled = false;
         }
 
         if let Ok(protocol) = env::var("OTEL_EXPORTER_OTLP_PROTOCOL") {
@@ -183,15 +183,15 @@ impl TelemetryConfig {
         if let Ok(rust_log) = env::var("RUST_LOG") {
             config.rust_log = rust_log;
         }
-        if let Ok(enabled) = env::var("JSON_LOGGING") {
-            if enabled.eq_ignore_ascii_case("true") {
-                config.json_logging = true;
-            }
+        if let Ok(enabled) = env::var("JSON_LOGGING")
+            && enabled.eq_ignore_ascii_case("true")
+        {
+            config.json_logging = true;
         }
-        if let Ok(interval) = env::var("OTEL_METRIC_EXPORT_INTERVAL") {
-            if let Ok(ms) = interval.parse() {
-                config.metrics_export_interval_ms = ms;
-            }
+        if let Ok(interval) = env::var("OTEL_METRIC_EXPORT_INTERVAL")
+            && let Ok(ms) = interval.parse()
+        {
+            config.metrics_export_interval_ms = ms;
         }
 
         config
@@ -330,20 +330,20 @@ impl Telemetry {
     /// Flush and shut down all initialized providers. Call this before the
     /// application exits to avoid losing buffered telemetry.
     pub fn shutdown(&self) {
-        if let Some(tp) = &self.tracer_provider {
-            if let Err(err) = tp.shutdown() {
-                eprintln!("⚠️  Sideways OTel: tracer provider shutdown failed: {err}");
-            }
+        if let Some(tp) = &self.tracer_provider
+            && let Err(err) = tp.shutdown()
+        {
+            eprintln!("⚠️  Sideways OTel: tracer provider shutdown failed: {err}");
         }
-        if let Some(mp) = &self.meter_provider {
-            if let Err(err) = mp.shutdown() {
-                eprintln!("⚠️  Sideways OTel: meter provider shutdown failed: {err}");
-            }
+        if let Some(mp) = &self.meter_provider
+            && let Err(err) = mp.shutdown()
+        {
+            eprintln!("⚠️  Sideways OTel: meter provider shutdown failed: {err}");
         }
-        if let Some(lp) = &self.logger_provider {
-            if let Err(err) = lp.shutdown() {
-                eprintln!("⚠️  Sideways OTel: logger provider shutdown failed: {err}");
-            }
+        if let Some(lp) = &self.logger_provider
+            && let Err(err) = lp.shutdown()
+        {
+            eprintln!("⚠️  Sideways OTel: logger provider shutdown failed: {err}");
         }
     }
 }
