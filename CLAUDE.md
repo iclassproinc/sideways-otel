@@ -90,6 +90,8 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 
 **No Metrics Macros**: Unlike `sideways` (which needs `cadence-macros` because StatsD has no native Rust ergonomics), OpenTelemetry's metrics API is already ergonomic - instruments are created once from a `Meter` and recorded against directly. `prelude::meter()` is the only convenience wrapper; do not add macro-based metric helpers.
 
+**Instruments Are Created Once, Not Per-Call**: `counter()`/`histogram()`/etc. build a new instrument on every call - calling one inside a hot-path function (e.g. a request handler) recreates the instrument on every request, which is wasted work. When writing example code, docs, or code that calls these helpers from somewhere that runs repeatedly, use a `OnceLock` (or build the instrument once at startup) and reuse the handle - see the pattern in README.md's Metrics section. `Counter`/`Histogram`/`UpDownCounter`/`Gauge` are all cheap-to-`.clone()`, `Send + Sync`, `Arc`-backed handles, so a plain `static OnceLock<Counter<u64>>` works without needing any framework-specific state.
+
 ### Tracing Architecture
 
 - Base: `Registry::default()` subscriber
