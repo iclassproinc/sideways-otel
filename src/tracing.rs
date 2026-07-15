@@ -2,7 +2,7 @@ use crate::{TelemetryConfig, TelemetryError};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::Resource;
 use tracing::Metadata;
-use tracing_subscriber::layer::{Context as LayerContext, Filter, Layer, SubscriberExt};
+use tracing_subscriber::layer::{Context as LayerContext, Filter, Layer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry};
 
@@ -18,31 +18,37 @@ fn get_env_filter(config: &TelemetryConfig) -> EnvFilter {
         })
 }
 
-/// Initialize console-only logging without OTLP export.
-pub fn init_console_logging(config: &TelemetryConfig) {
-    let env_filter = get_env_filter(config);
-    let subscriber = Registry::default();
+/// A type-erased `tracing_subscriber` layer, boxed so callers don't need to
+/// name the concrete (and otherwise unnameable) combinator type produced by
+/// composing console/OTel/logs-bridge layers with `.and_then()`.
+///
+/// Sideways `OTel` never installs this as the global subscriber itself -
+/// [`crate::init_telemetry_layer`] hands it back to the caller, who composes
+/// it onto their own `Registry` (alongside any layers of their own) and
+/// calls `.init()`. [`crate::init_telemetry`] is a thin convenience wrapper
+/// that does that composition/install for you when you don't need to add
+/// anything else.
+pub type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync + 'static>;
 
-    let result = if config.json_logging {
-        let console_layer = tracing_subscriber::fmt::layer()
+/// Build a console-only logging layer (no OTLP export).
+#[must_use]
+pub fn console_layer(config: &TelemetryConfig) -> BoxedLayer {
+    let env_filter = get_env_filter(config);
+    if config.json_logging {
+        tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
             .json()
             .flatten_event(true)
             .with_target(true)
             .with_span_list(true)
-            .with_filter(env_filter);
-        tracing::subscriber::set_global_default(subscriber.with(console_layer))
+            .with_filter(env_filter)
+            .boxed()
     } else {
-        let console_layer = tracing_subscriber::fmt::layer()
+        tracing_subscriber::fmt::layer()
             .with_ansi(false)
-            .with_filter(env_filter);
-        tracing::subscriber::set_global_default(subscriber.with(console_layer))
-    };
-
-    match result {
-        Ok(()) => eprintln!("✅ Console logging initialized"),
-        Err(e) => eprintln!("❌ Failed to initialize console logging: {e}"),
+            .with_filter(env_filter)
+            .boxed()
     }
 }
 
@@ -70,6 +76,28 @@ where
         }
 
         true
+    }
+}
+
+/// Custom filter to exclude `OpenTelemetry`'s own internal diagnostic events
+/// (emitted via its `internal-logs` feature, e.g. `BatchSpanProcessor.ExportError`
+/// when the backend is unreachable) from the `OTel` logs bridge.
+///
+/// Without this, an export failure's diagnostic event would itself get
+/// bridged into an `OTel` log record and re-exported over the same broken
+/// connection, which fails the same way and logs another diagnostic event -
+/// a self-feeding loop of "failed to export" logs about failing to export.
+/// This filter only applies to the `OTel` logs bridge layer; the console layer
+/// still prints these events (governed by `RUST_LOG` as normal), since
+/// seeing "export is failing" on the console is the whole point.
+struct InternalOtelLogFilter;
+
+impl<S> Filter<S> for InternalOtelLogFilter
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn enabled(&self, meta: &Metadata<'_>, _cx: &LayerContext<'_, S>) -> bool {
+        !meta.target().starts_with("opentelemetry")
     }
 }
 
@@ -112,18 +140,21 @@ macro_rules! build_otlp_exporter {
     }};
 }
 
-/// Initialize OTLP trace export and optionally OTLP log export, wiring both
-/// into a `tracing` subscriber alongside console logging.
+/// Initialize OTLP trace export and optionally OTLP log export, and build the
+/// combined `tracing` layer (console + `OTel` span layer + logs bridge) that
+/// wires them into a `tracing` subscriber.
 ///
-/// Returns Ok with (`tracer_provider`, optional `logger_provider`) if the OTLP
-/// exporters were built successfully, or Err otherwise. On error the caller
-/// should fall back to [`init_console_logging`].
+/// Returns Ok with (`tracer_provider`, optional `logger_provider`, the
+/// combined layer) if the OTLP exporters were built successfully, or Err
+/// otherwise. On error the caller should fall back to [`console_layer`]. The
+/// returned layer is not installed as the global subscriber - see
+/// [`BoxedLayer`] for why, and [`crate::init_telemetry`]/
+/// [`crate::init_telemetry_layer`] for how it gets installed.
 ///
 /// # Errors
 ///
 /// Returns [`TelemetryError::ExporterBuild`] if the OTLP span/log exporters
-/// fail to build, or [`TelemetryError::SubscriberInit`] if a global `tracing`
-/// subscriber has already been installed.
+/// fail to build.
 pub fn init_otlp_tracing(
     config: &TelemetryConfig,
     resource: Resource,
@@ -131,6 +162,7 @@ pub fn init_otlp_tracing(
     (
         opentelemetry_sdk::trace::SdkTracerProvider,
         Option<opentelemetry_sdk::logs::SdkLoggerProvider>,
+        BoxedLayer,
     ),
     TelemetryError,
 > {
@@ -161,10 +193,9 @@ pub fn init_otlp_tracing(
         None
     };
 
-    macro_rules! set_subscriber {
+    macro_rules! build_layer {
         ($console_layer:expr) => {{
             let env_filter = get_env_filter(config);
-            let subscriber = Registry::default();
             let console = $console_layer.with_filter(env_filter);
             let telemetry = tracing_opentelemetry::layer()
                 .with_tracer(tracer)
@@ -175,20 +206,17 @@ pub fn init_otlp_tracing(
                 let logs_filter = get_env_filter(config);
                 let logs_layer =
                     opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(lp)
+                        .with_filter(InternalOtelLogFilter)
                         .with_filter(logs_filter);
-                tracing::subscriber::set_global_default(
-                    subscriber.with(console).with(telemetry).with(logs_layer),
-                )
-                .map_err(|e| TelemetryError::SubscriberInit(e.to_string()))?;
+                console.and_then(telemetry).and_then(logs_layer).boxed()
             } else {
-                tracing::subscriber::set_global_default(subscriber.with(console).with(telemetry))
-                    .map_err(|e| TelemetryError::SubscriberInit(e.to_string()))?;
+                console.and_then(telemetry).boxed()
             }
         }};
     }
 
-    if config.json_logging {
-        set_subscriber!(
+    let layer: BoxedLayer = if config.json_logging {
+        build_layer!(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
@@ -196,14 +224,12 @@ pub fn init_otlp_tracing(
                 .flatten_event(true)
                 .with_target(true)
                 .with_span_list(true)
-        );
+        )
     } else {
-        set_subscriber!(tracing_subscriber::fmt::layer().with_ansi(false));
-    }
+        build_layer!(tracing_subscriber::fmt::layer().with_ansi(false))
+    };
 
-    tracing::info!("🦀 OTLP tracing initialized successfully");
-
-    Ok((tracer_provider, logger_provider))
+    Ok((tracer_provider, logger_provider, layer))
 }
 
 /// Convert plain string headers into gRPC metadata for the tonic exporter.

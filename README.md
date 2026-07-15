@@ -26,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sideways-otel = "0.3"
+sideways-otel = "0.4"
 ```
 
 Initialize in your application:
@@ -325,6 +325,37 @@ The library automatically filters out health check-related spans to reduce noise
 - Spans containing "health", "Health", or "Check"
 - gRPC health check services
 
+### Handling Export Failures
+
+If the OTLP endpoint is unreachable (down collector, bad TLS cert, wrong auth), export failures happen inside `opentelemetry_sdk`'s background batch-export tasks - they never surface through this crate's API (no `Result`, no panic). Instead, `opentelemetry_sdk`'s `internal-logs` feature (on by default) emits them as ordinary `tracing` events, e.g. `BatchSpanProcessor.ExportError` at `target: "opentelemetry_sdk"`, level `ERROR`. Those flow through whatever subscriber is currently installed - by default, that's console output, filtered by `RUST_LOG` exactly like any other log line. A clean run with no `*.ExportError` lines means export is succeeding; if you see them, check your endpoint/TLS/auth configuration.
+
+Sideways OTel filters these same events *out* of the OTel logs bridge specifically (any `target` starting with `opentelemetry`), so they still print to console but are never re-exported as OTel log records. Without that filter, an export failure's own diagnostic event would get bridged into an OTel log record and sent over the same broken connection, which fails the same way and logs another diagnostic event - a self-feeding loop of "failed to export" logs about failing to export. This only affects the logs bridge; console output is unaffected and still shows every `*.ExportError` line `RUST_LOG` lets through.
+
+### Composing Your Own Subscriber
+
+`init_telemetry` installs a global `tracing` subscriber for you, which means it can only be called once per process and leaves no room for adding your own layers (a Sentry layer, a custom filter, another exporter). If you need that, call `init_telemetry_layer` instead - it does everything `init_telemetry` does (propagation, OTLP export, the global tracer/meter providers) but hands back the composed layer instead of installing it, so you assemble the final subscriber yourself:
+
+```rust,no_run
+use sideways_otel::{init_telemetry_layer, TelemetryConfig};
+use tracing_subscriber::prelude::*;
+
+fn main() {
+    let config = TelemetryConfig::from_env();
+    let (telemetry, sideways_layer) = init_telemetry_layer(&config);
+
+    tracing_subscriber::registry()
+        .with(sideways_layer)
+        // .with(my_own_layer)
+        .init();
+
+    tracing::info!("Application started");
+
+    telemetry.shutdown();
+}
+```
+
+This also works with `traces_enabled`/`metrics_enabled`/`logs_enabled` all set to `false` - `init_telemetry_layer` still returns a (console-only) layer to compose, and propagation plus the global tracer/meter providers are still wired up, so a consuming application can rely on sideways-otel purely for those while doing its own thing with the `tracing` subscriber.
+
 ## Context Propagation
 
 `init_telemetry` installs a global context propagator by default - **W3C Trace Context** (`traceparent`/`tracestate`) plus **W3C Baggage** (`baggage`), matching the `OTEL_PROPAGATORS` spec default. This is what lets a trace stay connected across a process boundary (an outgoing HTTP call, a message queue, etc.) instead of starting a brand new, disconnected trace in the next service.
@@ -431,4 +462,4 @@ at your option.
 
 ## Credits
 
-Built by iClassPro team, powered by [OpenTelemetry](https://opentelemetry.io/).
+Powered by [OpenTelemetry](https://opentelemetry.io/).
