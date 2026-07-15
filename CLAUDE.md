@@ -59,7 +59,8 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 
 1. **`src/lib.rs`** - Main entry point with configuration and initialization
    - `TelemetryConfig` - Configuration struct with builder pattern and environment-based loading (standard `OTEL_*` vars)
-   - `init_telemetry()` - Single initialization function that sets up traces, metrics, and logs
+   - `init_telemetry()` - Single initialization function that sets up traces, metrics, and logs, and installs the resulting `tracing` layer as the global subscriber
+   - `init_telemetry_layer()` - Same setup, but returns `(Telemetry, tracing::BoxedLayer)` without installing a global subscriber, so the caller can compose it onto their own `Registry` alongside layers of their own (`init_telemetry` is a thin wrapper around this)
    - `Telemetry` struct - Return value holding all three providers; must be kept alive and `.shutdown()` on exit
 
 2. **`src/resource.rs`** - Builds the OpenTelemetry `Resource` (service name + extra attributes) shared by traces, metrics, and logs.
@@ -67,9 +68,11 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 3. **`src/tracing.rs`** - OTLP trace + log export
    - Builds `SpanExporter`/`LogExporter` via the `build_otlp_exporter!` macro (defined here, `#[macro_export]`ed so `metrics.rs` can reuse it), which branches on `TelemetryConfig::otlp_protocol` to use either `.with_tonic()` (gRPC) or `.with_http()` (HTTP/protobuf)
    - `HealthCheckFilter` - Custom filter to exclude health check spans (tonic_health, grpc.health, etc.)
+   - `InternalOtelLogFilter` - Custom filter, applied only to the OTel logs bridge layer, to exclude `opentelemetry`'s own internal diagnostic events (`target` starting with `opentelemetry`) - see the "Export Failure Handling" note below
    - `otlp_headers()` - shared helper turning `TelemetryConfig::otlp_headers` into a `HashMap`; `build_metadata()` further converts that into gRPC `MetadataMap` (HTTP transport just clones the `HashMap` directly, no conversion needed)
    - `tls_config()` - returns a `ClientTlsConfig` trusting Mozilla's webpki roots for `https://` gRPC endpoints, `None` for plain `http://` (see TLS note below)
    - Supports both full OTLP tracing and console-only logging fallback
+   - `init_otlp_tracing()`/`console_layer()` build and return a `BoxedLayer` rather than installing a global subscriber themselves - see the "Composable Subscriber" design pattern below
 
 4. **`src/metrics.rs`** - OTLP metric export
    - Native `opentelemetry_sdk::metrics` API: `MetricExporter` (built via the same `build_otlp_exporter!` macro) + `PeriodicReader` + `SdkMeterProvider`
@@ -89,7 +92,9 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 
 **One-Line Initialization**: `init_telemetry(&config)` sets up traces, metrics, and logs in one call, mirroring `sideways`.
 
-**Graceful Degradation**: If the OTLP endpoint is unavailable, the library logs to stderr and falls back to console-only logging rather than crashing the application (see `lib.rs::init_telemetry` and `tracing.rs::init_console_logging`).
+**Graceful Degradation**: If the OTLP endpoint is unavailable, the library logs to stderr and falls back to console-only logging rather than crashing the application (see `lib.rs::init_telemetry_layer` and `tracing.rs::console_layer`).
+
+**Composable Subscriber**: Sideways OTel never calls `tracing::subscriber::set_global_default` (or `.init()`) itself except inside `init_telemetry`, and even there only as a convenience wrapper. The real work happens in `init_telemetry_layer`, which returns `(Telemetry, tracing::BoxedLayer)` - a boxed `Layer<Registry>` combining console output with the OTel span layer and logs bridge (whichever are enabled), *not yet installed anywhere*. This is what lets a consuming application add its own `tracing` layers (a Sentry layer, a custom filter, another exporter) by composing the returned layer onto its own `Registry::default().with(sideways_layer).with(my_layer).init()`, and it's what lets that composition work *even with `traces_enabled`/`metrics_enabled`/`logs_enabled` all `false`* - propagation and the global tracer/meter providers are still wired up, and `console_layer()` still returns something to compose. Don't reintroduce a `set_global_default` call anywhere in `tracing.rs`/`metrics.rs` - only `lib.rs::init_telemetry` should ever install a global subscriber, and only because it's the opt-in one-liner path.
 
 **No Metrics Macros**: Unlike `sideways` (which needs `cadence-macros` because StatsD has no native Rust ergonomics), OpenTelemetry's metrics API is already ergonomic - instruments are created once from a `Meter` and recorded against directly. `prelude::meter()` is the only convenience wrapper; do not add macro-based metric helpers.
 
@@ -99,7 +104,7 @@ Also bump the version in **`README.md`'s Quick Start** (`sideways-otel = "X.Y"` 
 
 ### Tracing Architecture
 
-- Base: `Registry::default()` subscriber
+- `init_telemetry_layer()`/`init_otlp_tracing()` build a `tracing::BoxedLayer` (`Box<dyn Layer<Registry> + Send + Sync>`) and hand it back rather than installing it - `init_telemetry()` is the only place that composes it onto `tracing_subscriber::registry()` and calls `.try_init()`
 - Console layer: Standard formatted logging (no ANSI colors, or JSON via `json_logging`)
 - Telemetry layer: `tracing-opentelemetry` → OTLP span exporter, with health check filtering
 - Logs layer (optional): `opentelemetry-appender-tracing` bridges `tracing` events into OTel log records
@@ -122,6 +127,11 @@ Failure to shut down properly can result in lost telemetry, especially for short
 
 ### Instrumentation Requirement
 For distributed tracing to work, functions must use `#[tracing::instrument]`. Without it, spans won't be created.
+
+### Export Failure Handling
+Init-time failures (malformed header, bad exporter config) are handled synchronously: `init_otlp_tracing` returns `Result`, `init_telemetry_layer` catches `Err` and falls back to `console_layer` - see `TelemetryError::ExporterBuild`. Runtime failures (endpoint unreachable, TLS handshake failure, auth rejected) are a different animal - they happen inside `opentelemetry_sdk`'s background batch-export tasks, and **nothing in this crate's API surface ever sees them** (no `Result`, no callback, no panic). They only ever surface as ordinary `tracing` events via `opentelemetry_sdk`'s `internal-logs` feature (on by default in our dependency tree - see `opentelemetry_sdk`'s `Cargo.toml`), e.g. `BatchSpanProcessor.ExportError` at `target: "opentelemetry_sdk"`, level `ERROR`, picked up by whatever `tracing` subscriber is currently installed. This is intentional and matches "Graceful Degradation" above - but it means an app has no programmatic way to detect an export outage, only log-watching.
+
+Because those diagnostic events flow through the *same* global subscriber this crate installs, and that subscriber includes `OpenTelemetryTracingBridge` (the OTel logs bridge) whenever `logs_enabled`, an export failure's own diagnostic event would otherwise get bridged into an OTel log record and re-exported over the same broken connection - which fails the same way and logs another diagnostic event, forming a self-feeding loop of "failed to export" logs about failing to export (bounded by the export interval, not a runaway loop, but noisy during an outage). `tracing.rs::InternalOtelLogFilter` closes this by excluding any `target` starting with `opentelemetry` from the logs-bridge layer specifically - console output is untouched by this filter and still shows every diagnostic event `RUST_LOG` lets through, since seeing "export is failing" on the console is the point. Don't apply `InternalOtelLogFilter` to the console layer or the OTel span layer - it exists solely to break this one feedback path.
 
 ### Header/Auth Configuration
 All OTLP auth (API keys, tenant IDs, etc.) goes through `OTEL_EXPORTER_OTLP_HEADERS` (format: `key1=value1,key2=value2`) or `TelemetryConfig::builder().with_otlp_header(key, value)`. For gRPC, `tracing.rs::build_metadata` converts these into `tonic::metadata::MetadataMap`; for HTTP/protobuf, `WithHttpConfig::with_headers` takes the plain `HashMap` directly. This is the only place vendor auth requirements (e.g. Honeycomb's `x-honeycomb-team` header) should ever be mentioned, and only in documentation/examples (see `examples/vendor_backend.rs`) - never hardcoded into the library.

@@ -97,9 +97,6 @@ pub enum TelemetryError {
     #[error("OpenTelemetry metrics disabled via OTEL_METRICS_ENABLED=false")]
     MetricsDisabled,
 
-    #[error("Failed to set global subscriber: {0}")]
-    SubscriberInit(String),
-
     #[error("Failed to build OTLP exporter: {0}")]
     ExporterBuild(String),
 }
@@ -409,7 +406,8 @@ fn describe_endpoint(config: &TelemetryConfig) -> &str {
     })
 }
 
-/// Initialize telemetry with the given configuration.
+/// Initialize telemetry with the given configuration, without installing a
+/// global `tracing` subscriber.
 ///
 /// This will:
 /// 1. Install the configured context propagator(s) globally (independent of
@@ -417,12 +415,37 @@ fn describe_endpoint(config: &TelemetryConfig) -> &str {
 ///    correlating incoming/outgoing requests)
 /// 2. Initialize OTLP trace export (if enabled)
 /// 3. Initialize OTLP metrics export (if enabled)
-/// 4. Initialize OTLP log export (if enabled) and console logging
+/// 4. Initialize OTLP log export (if enabled)
+/// 5. Build (but not install) the combined `tracing` layer - console output,
+///    plus the `OTel` span layer and logs bridge when tracing/logs are enabled
 ///
-/// Returns a `Telemetry` struct that must be kept alive for the duration of
-/// the application and shut down on exit via [`Telemetry::shutdown`].
+/// Returns the `Telemetry` struct (kept alive for the duration of the
+/// application, shut down on exit via [`Telemetry::shutdown`]) alongside the
+/// layer. The caller is responsible for installing it, typically by
+/// composing it onto their own `Registry` with any additional layers of
+/// their own:
+///
+/// ```rust,no_run
+/// use sideways_otel::{init_telemetry_layer, TelemetryConfig};
+/// use tracing_subscriber::prelude::*;
+///
+/// let config = TelemetryConfig::from_env();
+/// let (telemetry, sideways_layer) = init_telemetry_layer(&config);
+///
+/// tracing_subscriber::registry()
+///     .with(sideways_layer)
+///     // .with(my_own_layer)
+///     .init();
+/// ```
+///
+/// This is what lets a consuming application add its own `tracing` layers
+/// (a Sentry layer, a custom filter, etc.) - or, with `traces_enabled`,
+/// `metrics_enabled`, and `logs_enabled` all `false`, install nothing but its
+/// own layers while still getting propagation and the global tracer/meter
+/// providers wired up. Use [`init_telemetry`] instead if you don't need to
+/// add anything of your own.
 #[must_use]
-pub fn init_telemetry(config: &TelemetryConfig) -> Telemetry {
+pub fn init_telemetry_layer(config: &TelemetryConfig) -> (Telemetry, tracing::BoxedLayer) {
     eprintln!("🦀 Sideways OTel: Initializing...");
 
     let _ = SERVICE_NAME.set(config.service_name.clone());
@@ -433,25 +456,23 @@ pub fn init_telemetry(config: &TelemetryConfig) -> Telemetry {
 
     let endpoint_description = describe_endpoint(config);
 
-    let (tracer_provider, logger_provider) = if config.traces_enabled {
+    let (tracer_provider, logger_provider, layer) = if config.traces_enabled {
         match tracing::init_otlp_tracing(config, resource.clone()) {
-            Ok((tp, lp)) => {
+            Ok((tp, lp, layer)) => {
                 eprintln!("✅ Sideways OTel: tracing initialized -> {endpoint_description}");
                 if lp.is_some() {
                     eprintln!("✅ Sideways OTel: log export initialized");
                 }
-                (Some(tp), lp)
+                (Some(tp), lp, layer)
             }
             Err(err) => {
                 eprintln!("⚠️  Sideways OTel: tracing unavailable: {err}");
-                tracing::init_console_logging(config);
-                (None, None)
+                (None, None, tracing::console_layer(config))
             }
         }
     } else {
         eprintln!("📊 Sideways OTel: tracing disabled");
-        tracing::init_console_logging(config);
-        (None, None)
+        (None, None, tracing::console_layer(config))
     };
 
     let meter_provider = if config.metrics_enabled {
@@ -470,9 +491,38 @@ pub fn init_telemetry(config: &TelemetryConfig) -> Telemetry {
         None
     };
 
-    Telemetry {
-        tracer_provider,
-        meter_provider,
-        logger_provider,
+    (
+        Telemetry {
+            tracer_provider,
+            meter_provider,
+            logger_provider,
+        },
+        layer,
+    )
+}
+
+/// Initialize telemetry and install the resulting layer as the global
+/// `tracing` subscriber. A convenience wrapper around
+/// [`init_telemetry_layer`] for the common case where the application
+/// doesn't need to add any `tracing` layers of its own - if it does, call
+/// [`init_telemetry_layer`] directly instead.
+///
+/// Returns a `Telemetry` struct that must be kept alive for the duration of
+/// the application and shut down on exit via [`Telemetry::shutdown`].
+///
+/// If a global `tracing` subscriber has already been installed (e.g. by
+/// another library, or a previous init call), this logs to stderr and
+/// leaves the existing subscriber in place rather than panicking.
+#[must_use]
+pub fn init_telemetry(config: &TelemetryConfig) -> Telemetry {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let (telemetry, layer) = init_telemetry_layer(config);
+
+    if let Err(err) = tracing_subscriber::registry().with(layer).try_init() {
+        eprintln!("❌ Sideways OTel: failed to install global tracing subscriber: {err}");
     }
+
+    telemetry
 }
