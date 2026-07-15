@@ -356,6 +356,8 @@ fn main() {
 
 This also works with `traces_enabled`/`metrics_enabled`/`logs_enabled` all set to `false` - `init_telemetry_layer` still returns a (console-only) layer to compose, and propagation plus the global tracer/meter providers are still wired up, so a consuming application can rely on sideways-otel purely for those while doing its own thing with the `tracing` subscriber.
 
+See [`examples/custom_subscriber.rs`](examples/custom_subscriber.rs) for a runnable version of the above, composing in a small custom layer alongside sideways-otel's.
+
 ## Context Propagation
 
 `init_telemetry` installs a global context propagator by default - **W3C Trace Context** (`traceparent`/`tracestate`) plus **W3C Baggage** (`baggage`), matching the `OTEL_PROPAGATORS` spec default. This is what lets a trace stay connected across a process boundary (an outgoing HTTP call, a message queue, etc.) instead of starting a brand new, disconnected trace in the next service.

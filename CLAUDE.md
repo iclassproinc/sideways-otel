@@ -44,6 +44,8 @@ A clean exit with no `BatchSpanProcessor.ExportError` / `BatchLogProcessor.Expor
 
 `examples/vendor_backend.rs` exercises the HTTPS/TLS + auth-header path against a real hosted OTLP endpoint. It takes the endpoint, header name, and header value entirely from environment variables (`OTLP_ENDPOINT`/`OTLP_HEADER_NAME`/`OTLP_HEADER_VALUE`) rather than hardcoding any vendor, so it can be pointed at whichever backend you're validating against - use it when validating changes to `tls_config()`/`build_otlp_exporter!`/header handling. A gRPC `Unauthenticated` error (not `UnknownIssuer`/connection errors) means TLS and transport are working correctly and only the credential itself is invalid/missing, which is expected without a real API key.
 
+`examples/custom_subscriber.rs` exercises `init_telemetry_layer` - it composes sideways-otel's returned layer with a small custom counting layer on the same `Registry` and installs that itself, instead of calling `init_telemetry`. Use it when validating changes to the layer-composition path (`init_telemetry_layer`, `console_layer`, `BoxedLayer`) or to `InternalOtelLogFilter` - running it with no OTLP receiver up should print exactly one `BatchLogProcessor.ExportError`/`BatchSpanProcessor.ExportError` line per export cycle to console, not a growing cascade.
+
 ### Publishing
 Publishing is automated via `.github/workflows/publish.yml`: pushing a `vX.Y.Z` tag (that's reachable from `main` and matches `Cargo.toml`'s version) runs the test/clippy gate, then `cargo publish` and creates a GitHub release. Before tagging:
 ```bash
