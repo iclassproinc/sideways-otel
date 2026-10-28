@@ -399,26 +399,32 @@ impl Telemetry {
     /// "already shut down" error to stderr.
     pub fn force_flush(&self) {
         std::thread::scope(|scope| {
+            // Keep every handle and join it explicitly. A scoped thread whose
+            // handle is dropped unjoined makes `scope` re-panic on this thread
+            // if it panicked, which would take down the caller's handler.
+            // Joining returns the panic as an `Err` instead. All threads are
+            // already running, so joining in order doesn't add latency.
+            let mut handles = Vec::with_capacity(3);
             if let Some(tp) = &self.tracer_provider {
-                scope.spawn(|| {
-                    if let Err(err) = tp.force_flush() {
-                        eprintln!("⚠️  Sideways OTel: tracer provider flush failed: {err}");
-                    }
-                });
+                handles.push(("tracer", scope.spawn(|| tp.force_flush())));
             }
             if let Some(mp) = &self.meter_provider {
-                scope.spawn(|| {
-                    if let Err(err) = mp.force_flush() {
-                        eprintln!("⚠️  Sideways OTel: meter provider flush failed: {err}");
-                    }
-                });
+                handles.push(("meter", scope.spawn(|| mp.force_flush())));
             }
             if let Some(lp) = &self.logger_provider {
-                scope.spawn(|| {
-                    if let Err(err) = lp.force_flush() {
-                        eprintln!("⚠️  Sideways OTel: logger provider flush failed: {err}");
+                handles.push(("logger", scope.spawn(|| lp.force_flush())));
+            }
+
+            for (name, handle) in handles {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!("⚠️  Sideways OTel: {name} provider flush failed: {err}");
                     }
-                });
+                    Err(_) => {
+                        eprintln!("⚠️  Sideways OTel: {name} provider flush panicked");
+                    }
+                }
             }
         });
     }
