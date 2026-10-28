@@ -404,25 +404,26 @@ impl Telemetry {
             // if it panicked, which would take down the caller's handler.
             // Joining returns the panic as an `Err` instead. All threads are
             // already running, so joining in order doesn't add latency.
-            let mut handles = Vec::with_capacity(3);
-            if let Some(tp) = &self.tracer_provider {
-                handles.push(("tracer", scope.spawn(|| tp.force_flush())));
-            }
-            if let Some(mp) = &self.meter_provider {
-                handles.push(("meter", scope.spawn(|| mp.force_flush())));
-            }
-            if let Some(lp) = &self.logger_provider {
-                handles.push(("logger", scope.spawn(|| lp.force_flush())));
-            }
+            let handles = [
+                self.tracer_provider
+                    .as_ref()
+                    .map(|p| ("tracer", scope.spawn(move || p.force_flush()))),
+                self.meter_provider
+                    .as_ref()
+                    .map(|p| ("meter", scope.spawn(move || p.force_flush()))),
+                self.logger_provider
+                    .as_ref()
+                    .map(|p| ("logger", scope.spawn(move || p.force_flush()))),
+            ];
 
-            for (name, handle) in handles {
+            for (signal, handle) in handles.into_iter().flatten() {
                 match handle.join() {
                     Ok(Ok(())) => {}
                     Ok(Err(err)) => {
-                        eprintln!("⚠️  Sideways OTel: {name} provider flush failed: {err}");
+                        eprintln!("⚠️  Sideways OTel: {signal} provider flush failed: {err}");
                     }
                     Err(_) => {
-                        eprintln!("⚠️  Sideways OTel: {name} provider flush panicked");
+                        eprintln!("⚠️  Sideways OTel: {signal} provider flush panicked");
                     }
                 }
             }
