@@ -385,6 +385,12 @@ impl Telemetry {
     /// would otherwise never get to export.
     ///
     /// Blocks the calling thread until each provider has exported (or failed).
+    /// The three providers are flushed concurrently, so the worst case is a
+    /// single exporter timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`, default 10s)
+    /// rather than one per signal. On Lambda, set that timeout comfortably
+    /// below the function timeout so an unreachable collector cannot cause
+    /// the invocation itself to time out.
+    ///
     /// Failures are reported to stderr and never returned, matching the
     /// "graceful degradation" behavior of the rest of this crate.
     ///
@@ -392,21 +398,29 @@ impl Telemetry {
     /// shut down, a flush has nothing to export and just logs the SDK's
     /// "already shut down" error to stderr.
     pub fn force_flush(&self) {
-        if let Some(tp) = &self.tracer_provider
-            && let Err(err) = tp.force_flush()
-        {
-            eprintln!("⚠️  Sideways OTel: tracer provider flush failed: {err}");
-        }
-        if let Some(mp) = &self.meter_provider
-            && let Err(err) = mp.force_flush()
-        {
-            eprintln!("⚠️  Sideways OTel: meter provider flush failed: {err}");
-        }
-        if let Some(lp) = &self.logger_provider
-            && let Err(err) = lp.force_flush()
-        {
-            eprintln!("⚠️  Sideways OTel: logger provider flush failed: {err}");
-        }
+        std::thread::scope(|scope| {
+            if let Some(tp) = &self.tracer_provider {
+                scope.spawn(|| {
+                    if let Err(err) = tp.force_flush() {
+                        eprintln!("⚠️  Sideways OTel: tracer provider flush failed: {err}");
+                    }
+                });
+            }
+            if let Some(mp) = &self.meter_provider {
+                scope.spawn(|| {
+                    if let Err(err) = mp.force_flush() {
+                        eprintln!("⚠️  Sideways OTel: meter provider flush failed: {err}");
+                    }
+                });
+            }
+            if let Some(lp) = &self.logger_provider {
+                scope.spawn(|| {
+                    if let Err(err) = lp.force_flush() {
+                        eprintln!("⚠️  Sideways OTel: logger provider flush failed: {err}");
+                    }
+                });
+            }
+        });
     }
 
     /// Flush and shut down all initialized providers. Call this before the

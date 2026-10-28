@@ -425,7 +425,7 @@ lambda_runtime::run(service_fn(move |event| {
 .await
 ```
 
-`force_flush` blocks until each provider has exported (or failed), so set a short exporter timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`) if the collector might be unreachable.
+`force_flush` flushes traces, metrics and logs concurrently and blocks until each has exported (or failed), so the worst case is one exporter timeout. `OTEL_EXPORTER_OTLP_TIMEOUT` defaults to 10s: set it well below your Lambda timeout (e.g. `2000`) so an unreachable collector can't cause the invocation to time out.
 
 ## Local Testing
 
