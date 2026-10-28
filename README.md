@@ -26,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sideways-otel = "0.4"
+sideways-otel = "0.5"
 ```
 
 Initialize in your application:
