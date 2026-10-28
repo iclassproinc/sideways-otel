@@ -404,6 +404,27 @@ if let Err(err) = tracing::Span::current().set_parent(parent_cx) {
 
 `set_parent` (from `OpenTelemetrySpanExt`, re-exported in the prelude) makes the current span a child of whatever trace the incoming request was already part of, so the whole call chain shows up as one connected trace instead of two separate ones.
 
+## AWS Lambda
+
+Lambda freezes the execution environment as soon as the handler returns, so batch processors and the periodic metrics reader never get a chance to export on their own. Call `Telemetry::force_flush()` at the end of every invocation. Unlike `shutdown()`, it leaves the providers usable, so it can be called on every invocation:
+
+```rust,ignore
+let telemetry = std::sync::Arc::new(sideways_otel::init_telemetry(&TelemetryConfig::from_env()));
+
+lambda_runtime::run(service_fn(move |event| {
+    let telemetry = telemetry.clone();
+    async move {
+        let result = handle(event).await;
+        // force_flush blocks, so keep it off the async worker threads.
+        tokio::task::spawn_blocking(move || telemetry.force_flush()).await.ok();
+        result
+    }
+}))
+.await
+```
+
+`force_flush` blocks until each provider has exported (or failed), so set a short exporter timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`) if the collector might be unreachable.
+
 ## Local Testing
 
 Any OTLP-compatible collector works. Two easy options:

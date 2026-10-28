@@ -376,6 +376,35 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
+    /// Flush all buffered spans, metrics, and logs without shutting down.
+    ///
+    /// Unlike [`Telemetry::shutdown`], the providers stay usable afterwards, so
+    /// this can be called repeatedly - e.g. at the end of every AWS Lambda
+    /// invocation, where the execution environment is frozen as soon as the
+    /// handler returns and the periodic metrics reader / batch processors
+    /// would otherwise never get to export.
+    ///
+    /// Blocks the calling thread until each provider has exported (or failed).
+    /// Failures are reported to stderr and never returned, matching the
+    /// "graceful degradation" behavior of the rest of this crate.
+    pub fn force_flush(&self) {
+        if let Some(tp) = &self.tracer_provider
+            && let Err(err) = tp.force_flush()
+        {
+            eprintln!("⚠️  Sideways OTel: tracer provider flush failed: {err}");
+        }
+        if let Some(mp) = &self.meter_provider
+            && let Err(err) = mp.force_flush()
+        {
+            eprintln!("⚠️  Sideways OTel: meter provider flush failed: {err}");
+        }
+        if let Some(lp) = &self.logger_provider
+            && let Err(err) = lp.force_flush()
+        {
+            eprintln!("⚠️  Sideways OTel: logger provider flush failed: {err}");
+        }
+    }
+
     /// Flush and shut down all initialized providers. Call this before the
     /// application exits to avoid losing buffered telemetry.
     pub fn shutdown(&self) {
