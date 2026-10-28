@@ -376,6 +376,60 @@ pub struct Telemetry {
 }
 
 impl Telemetry {
+    /// Flush all buffered spans, metrics, and logs without shutting down.
+    ///
+    /// Unlike [`Telemetry::shutdown`], the providers stay usable afterwards, so
+    /// this can be called repeatedly - e.g. at the end of every AWS Lambda
+    /// invocation, where the execution environment is frozen as soon as the
+    /// handler returns and the periodic metrics reader / batch processors
+    /// would otherwise never get to export.
+    ///
+    /// Blocks the calling thread until each provider has exported (or failed).
+    /// The three providers are flushed concurrently, so the worst case is a
+    /// single exporter timeout (`OTEL_EXPORTER_OTLP_TIMEOUT`, default 10s)
+    /// rather than one per signal. On Lambda, set that timeout comfortably
+    /// below the function timeout so an unreachable collector cannot cause
+    /// the invocation itself to time out.
+    ///
+    /// Failures are reported to stderr and never returned, matching the
+    /// "graceful degradation" behavior of the rest of this crate.
+    ///
+    /// Call this before [`Telemetry::shutdown`]: once the providers have been
+    /// shut down, a flush has nothing to export and just logs the SDK's
+    /// "already shut down" error to stderr.
+    pub fn force_flush(&self) {
+        std::thread::scope(|scope| {
+            // Keep every handle and join it explicitly. A scoped thread whose
+            // handle is dropped unjoined makes `scope` re-panic on this thread
+            // if it panicked, which would take down the caller's handler.
+            // Joining returns the panic as an `Err` instead. All threads are
+            // already running, so joining in order doesn't add latency.
+            let handles = [
+                self.tracer_provider
+                    .as_ref()
+                    .map(|p| ("tracer", scope.spawn(move || p.force_flush()))),
+                self.meter_provider
+                    .as_ref()
+                    .map(|p| ("meter", scope.spawn(move || p.force_flush()))),
+                self.logger_provider
+                    .as_ref()
+                    .map(|p| ("logger", scope.spawn(move || p.force_flush()))),
+            ];
+
+            for (signal, handle) in handles.into_iter().flatten() {
+                match handle.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        eprintln!("⚠️  Sideways OTel: {signal} provider flush failed: {err}");
+                    }
+                    Err(_) => {
+                        eprintln!("⚠️  Sideways OTel: {signal} provider flush panicked");
+                    }
+                }
+            }
+        });
+    }
+
     /// Flush and shut down all initialized providers. Call this before the
     /// application exits to avoid losing buffered telemetry.
     pub fn shutdown(&self) {
