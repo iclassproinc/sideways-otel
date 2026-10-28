@@ -9,3 +9,10 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "monthly"
+    # The OpenTelemetry crates are versioned in lockstep and re-exported through
+    # the prelude, so a lone bump never compiles. Group them into a single PR.
+    groups:
+      opentelemetry:
+        patterns:
+          - "opentelemetry*"
+          - "tracing-opentelemetry"

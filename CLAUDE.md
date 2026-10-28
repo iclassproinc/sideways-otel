@@ -145,8 +145,8 @@ All OTLP auth (API keys, tenant IDs, etc.) goes through `OTEL_EXPORTER_OTLP_HEAD
 `init_telemetry()` is a plain (non-`async`) function, but it still requires being called from inside an active Tokio runtime (e.g. `#[tokio::main]`, or after entering a `Runtime`) - both `opentelemetry_sdk`'s `rt-tokio` feature (batch processors) and the TLS-enabled tonic channel construction need a live reactor. Calling it from a bare `fn main()` with no runtime panics with "there is no reactor running". This is why every example uses `#[tokio::main] async fn main()` even though none of them actually `.await` `init_telemetry()` itself.
 
 ### Dependencies
-- **opentelemetry / opentelemetry_sdk / opentelemetry-otlp**: 0.32.x - OTLP export over gRPC (tonic) and HTTP/protobuf (reqwest), covering traces, metrics, and logs
-- **tracing-opentelemetry**: 0.33.x
+- **opentelemetry / opentelemetry_sdk / opentelemetry-otlp / opentelemetry-appender-tracing / opentelemetry-semantic-conventions**: 0.33.x (these are versioned in lockstep - always bump them together) - OTLP export over gRPC (tonic) and HTTP/protobuf (reqwest), covering traces, metrics, and logs
+- **tracing-opentelemetry**: 0.34.x (tracks the OpenTelemetry minor: 0.34 pairs with OTel 0.33)
 - **tonic**: pinned to match `opentelemetry-otlp`'s gRPC stack; used directly in `tracing.rs` to build `MetadataMap` for headers and `ClientTlsConfig` for TLS. Requires the `tls-ring` (crypto backend) and `tls-webpki-roots` (root cert store) features - both are needed, not just one
 
 ## Configuration
