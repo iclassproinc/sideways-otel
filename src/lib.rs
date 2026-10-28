@@ -387,6 +387,10 @@ impl Telemetry {
     /// Blocks the calling thread until each provider has exported (or failed).
     /// Failures are reported to stderr and never returned, matching the
     /// "graceful degradation" behavior of the rest of this crate.
+    ///
+    /// Call this before [`Telemetry::shutdown`]: once the providers have been
+    /// shut down, a flush has nothing to export and just logs the SDK's
+    /// "already shut down" error to stderr.
     pub fn force_flush(&self) {
         if let Some(tp) = &self.tracer_provider
             && let Err(err) = tp.force_flush()

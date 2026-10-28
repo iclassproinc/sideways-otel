@@ -416,7 +416,9 @@ lambda_runtime::run(service_fn(move |event| {
     async move {
         let result = handle(event).await;
         // force_flush blocks, so keep it off the async worker threads.
-        tokio::task::spawn_blocking(move || telemetry.force_flush()).await.ok();
+        if let Err(e) = tokio::task::spawn_blocking(move || telemetry.force_flush()).await {
+            eprintln!("sideways_otel: force_flush task panicked: {e}");
+        }
         result
     }
 }))
