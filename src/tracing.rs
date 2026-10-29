@@ -113,7 +113,7 @@ pub(crate) fn otlp_headers(config: &TelemetryConfig) -> std::collections::HashMa
 /// an expression like `opentelemetry_otlp::SpanExporter::builder()`.
 #[macro_export]
 macro_rules! build_otlp_exporter {
-    ($builder_ctor:expr, $config:expr, $headers:expr) => {{
+    ($builder_ctor:expr, $config:expr, $headers:expr, $signal_path:expr) => {{
         use opentelemetry_otlp::{WithExportConfig, WithHttpConfig, WithTonicConfig};
         match $config.otlp_protocol {
             $crate::OtlpProtocol::Grpc => {
@@ -131,13 +131,40 @@ macro_rules! build_otlp_exporter {
             $crate::OtlpProtocol::HttpProtobuf => {
                 let mut builder = $builder_ctor.with_http().with_headers($headers.clone());
                 if let Some(endpoint) = &$config.otlp_endpoint {
-                    builder = builder.with_endpoint(endpoint);
+                    builder = builder.with_endpoint($crate::tracing::http_signal_endpoint(
+                        endpoint,
+                        $signal_path,
+                    ));
                 }
                 builder.build()
             }
         }
         .map_err(|e| $crate::TelemetryError::ExporterBuild(e.to_string()))
     }};
+    ($builder_ctor:expr, $config:expr, $headers:expr) => {
+        $crate::build_otlp_exporter!($builder_ctor, $config, $headers, "")
+    };
+}
+
+/// The URL an HTTP/protobuf exporter posts to for one signal.
+///
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` is a base URL, and the spec appends
+/// `/v1/traces`, `/v1/metrics` or `/v1/logs` to it. The SDK only does that when it
+/// reads the variable itself; `with_endpoint` takes the URL as given, so the path
+/// has to be added here or every export is a POST to `/` and gets a 404.
+/// A URL that already ends in the signal path is left alone. gRPC is unaffected:
+/// it addresses the service, not a path.
+#[must_use]
+pub fn http_signal_endpoint(endpoint: &str, signal_path: &str) -> String {
+    if signal_path.is_empty() {
+        return endpoint.to_string();
+    }
+    let base = endpoint.trim_end_matches('/');
+    if base.ends_with(signal_path) {
+        base.to_string()
+    } else {
+        format!("{base}/{signal_path}")
+    }
 }
 
 /// Initialize OTLP trace export and optionally OTLP log export, and build the
@@ -168,8 +195,12 @@ pub fn init_otlp_tracing(
 > {
     let headers = otlp_headers(config);
 
-    let span_exporter: opentelemetry_otlp::SpanExporter =
-        crate::build_otlp_exporter!(opentelemetry_otlp::SpanExporter::builder(), config, &headers)?;
+    let span_exporter: opentelemetry_otlp::SpanExporter = crate::build_otlp_exporter!(
+        opentelemetry_otlp::SpanExporter::builder(),
+        config,
+        &headers,
+        "v1/traces"
+    )?;
 
     let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
         .with_batch_exporter(span_exporter)
@@ -180,8 +211,12 @@ pub fn init_otlp_tracing(
     let tracer = tracer_provider.tracer(config.service_name.clone());
 
     let logger_provider = if config.logs_enabled {
-        let log_exporter: opentelemetry_otlp::LogExporter =
-            crate::build_otlp_exporter!(opentelemetry_otlp::LogExporter::builder(), config, &headers)?;
+        let log_exporter: opentelemetry_otlp::LogExporter = crate::build_otlp_exporter!(
+            opentelemetry_otlp::LogExporter::builder(),
+            config,
+            &headers,
+            "v1/logs"
+        )?;
 
         Some(
             opentelemetry_sdk::logs::SdkLoggerProvider::builder()
@@ -255,4 +290,45 @@ pub(crate) fn tls_config(endpoint: &str) -> Option<tonic::transport::ClientTlsCo
     endpoint
         .starts_with("https://")
         .then(|| tonic::transport::ClientTlsConfig::new().with_webpki_roots())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_signal_endpoint;
+
+    #[test]
+    fn appends_the_signal_path_to_a_base_url() {
+        assert_eq!(
+            http_signal_endpoint("http://collector:4318", "v1/traces"),
+            "http://collector:4318/v1/traces"
+        );
+        assert_eq!(
+            http_signal_endpoint("http://collector:4318/", "v1/metrics"),
+            "http://collector:4318/v1/metrics"
+        );
+    }
+
+    #[test]
+    fn keeps_a_url_that_already_has_the_path() {
+        assert_eq!(
+            http_signal_endpoint("http://collector:4318/v1/traces", "v1/traces"),
+            "http://collector:4318/v1/traces"
+        );
+    }
+
+    #[test]
+    fn keeps_a_prefix_path_from_the_base_url() {
+        assert_eq!(
+            http_signal_endpoint("https://gw.example.com/otlp", "v1/logs"),
+            "https://gw.example.com/otlp/v1/logs"
+        );
+    }
+
+    #[test]
+    fn empty_signal_path_leaves_the_url_alone() {
+        assert_eq!(
+            http_signal_endpoint("http://collector:4318", ""),
+            "http://collector:4318"
+        );
+    }
 }
