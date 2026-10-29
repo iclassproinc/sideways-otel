@@ -23,7 +23,8 @@ pub fn init_otlp_metrics(
     let exporter: opentelemetry_otlp::MetricExporter = crate::build_otlp_exporter!(
         opentelemetry_otlp::MetricExporter::builder(),
         config,
-        &headers
+        &headers,
+        "v1/metrics"
     )?;
 
     let reader = PeriodicReader::builder(exporter)
